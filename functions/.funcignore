@@ -1,0 +1,14 @@
+.git*
+.vscode
+.idea
+local.settings.json
+local.settings.json.example
+test
+tests
+.pytest_cache
+__pycache__
+*.pyc
+.venv
+venv
+Dockerfile
+

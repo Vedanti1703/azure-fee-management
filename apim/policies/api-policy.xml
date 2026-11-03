@@ -1,0 +1,39 @@
+<!--
+    API-Level Policy for Student Fee Management API
+    Applied to all operations within the Fee Management API scope.
+-->
+<policies>
+    <inbound>
+        <base />
+        
+        <!-- Enforce Subscription Key -->
+        <check-header name="Ocp-Apim-Subscription-Key" failed-check-httpcode="401" failed-check-error-message="Subscription key is missing or invalid." />
+
+        <!-- Set Backend Service Target (Points to Azure Functions App) -->
+        <!-- In production, backend URL is resolved dynamically via Named Values or Managed Identity -->
+        <set-backend-service base-url="{{FUNCTION_APP_BACKEND_URL}}" />
+
+        <!-- Forward Client Identity Claims -->
+        <choose>
+            <when condition="@(context.Request.Headers.ContainsKey(&quot;Authorization&quot;))">
+                <set-header name="X-User-Subject" exists-action="override">
+                    <value>@(context.Request.Headers.GetValueOrDefault("Authorization", "").Replace("Bearer ", ""))</value>
+                </set-header>
+            </when>
+        </choose>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <!-- Cache-Control headers for dynamic transactional endpoints -->
+        <set-header name="Cache-Control" exists-action="override">
+            <value>no-cache, no-store, must-revalidate</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+
