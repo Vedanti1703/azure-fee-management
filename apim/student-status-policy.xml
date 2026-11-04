@@ -1,0 +1,51 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- 
+            1. CORS Policy: Allow localhost origins for frontend development 
+        -->
+        <cors allow-credentials="true">
+            <allowed-origins>
+                <origin>http://localhost</origin>
+                <origin>http://localhost:3000</origin>
+                <origin>http://localhost:5173</origin>
+                <origin>http://localhost:8080</origin>
+                <origin>https://localhost</origin>
+                <origin>https://localhost:3000</origin>
+                <origin>https://localhost:5173</origin>
+                <origin>https://localhost:8080</origin>
+            </allowed-origins>
+            <allowed-methods preflight-result-max-age="300">
+                <method>GET</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>*</header>
+            </allowed-headers>
+        </cors>
+
+        <!-- 
+            2. Rate Limiting: 10 calls per 60 seconds keyed by APIM Subscription ID 
+        -->
+        <rate-limit-by-key calls="10" 
+                           renewal-period="60" 
+                           counter-key="@(context.Subscription != null ? context.Subscription.Id : context.Request.IpAddress)" />
+
+        <!-- 
+            3. Azure Functions Authentication: Inject Function Key via Named Value 
+        -->
+        <set-header name="x-functions-key" exists-action="override">
+            <value>{{function-key}}</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+

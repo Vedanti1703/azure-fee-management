@@ -5,31 +5,15 @@
     "FUNCTIONS_WORKER_RUNTIME": "python",
     "AzureWebJobsFeatureFlags": "EnableWorkerIndexing",
     
-    "ENVIRONMENT": "development",
-    "LOG_LEVEL": "INFO",
-
-    "AZURE_SQL_CONNECTIONSTRING": "Driver={ODBC Driver 18 for SQL Server};Server=localhost,1433;Database=StudentFeeManagementDB;Uid=sa;Pwd=<your-strong-sql-password-placeholder>;TrustServerCertificate=yes;",
-    "DB_SERVER": "localhost,1433",
-    "DB_NAME": "StudentFeeManagementDB",
-    "DB_USER": "sa",
-    "DB_PASSWORD": "<your-strong-sql-password-placeholder>",
-    "DB_DRIVER": "ODBC Driver 18 for SQL Server",
-
-    "AUTH_MODE": "JWT",
-    "JWT_SECRET_KEY": "<generate-a-strong-secret-key-32-chars-minimum>",
-    "JWT_ALGORITHM": "HS256",
-    "JWT_ISSUER": "fee-management-service",
-    "JWT_AUDIENCE": "fee-management-client",
-
-    "SMTP_HOST": "localhost",
-    "SMTP_PORT": "1025",
-    "SENDER_EMAIL": "billing@university.edu",
-    "SENDER_NAME": "Student Accounts Office",
-
+    "SQL_CONNECTION_STRING": "Driver={ODBC Driver 18 for SQL Server};Server=localhost,1433;Database=FeeManagement;Uid=sa;Pwd=<your-sql-password-placeholder>;Encrypt=yes;TrustServerCertificate=yes;",
+    
+    "AUTH_MODE": "jwt",
+    "TENANT_ID": "<your-azure-tenant-id-placeholder>",
+    "API_AUDIENCE": "api://<your-api-audience-placeholder>",
+    
     "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/"
   },
   "Host": {
     "CORS": "*"
   }
 }
-

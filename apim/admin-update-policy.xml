@@ -1,0 +1,86 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- 
+            1. CORS Policy: Allow localhost origins for PUT and preflight OPTIONS 
+        -->
+        <cors allow-credentials="true">
+            <allowed-origins>
+                <origin>http://localhost</origin>
+                <origin>http://localhost:3000</origin>
+                <origin>http://localhost:5173</origin>
+                <origin>http://localhost:8080</origin>
+                <origin>https://localhost</origin>
+                <origin>https://localhost:3000</origin>
+                <origin>https://localhost:5173</origin>
+                <origin>https://localhost:8080</origin>
+            </allowed-origins>
+            <allowed-methods preflight-result-max-age="300">
+                <method>PUT</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>*</header>
+            </allowed-headers>
+        </cors>
+
+        <!-- 
+            2. Rate Limiting: 10 calls per 60 seconds keyed by APIM Subscription ID 
+        -->
+        <rate-limit-by-key calls="10" 
+                           renewal-period="60" 
+                           counter-key="@(context.Subscription != null ? context.Subscription.Id : context.Request.IpAddress)" />
+
+        <!-- 
+            3. Entra ID JWT Validation:
+               - Uses OpenID Configuration endpoint
+               - Validates audience against {{api-app-id}}
+               - Enforces 'roles' claim contains 'Admin'
+               - Emits HTTP 401 on validation failure
+        -->
+        <validate-jwt header-name="Authorization" 
+                      failed-validation-httpcode="401" 
+                      failed-validation-error-message="Unauthorized: Missing, invalid, or expired Entra ID token, or missing 'Admin' role claim." 
+                      require-scheme="Bearer" 
+                      require-expiration-time="true">
+            <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
+            <audiences>
+                <audience>{{api-app-id}}</audience>
+            </audiences>
+            <issuers>
+                <issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
+            </issuers>
+            <required-claims>
+                <claim name="roles" match="any">
+                    <value>Admin</value>
+                </claim>
+            </required-claims>
+        </validate-jwt>
+
+        <!-- 
+            4. Forward Authorization Header to Backend:
+               Preserves the original client Bearer token so the backend Function
+               can extract caller identity (oid) and write non-PII audit trails.
+        -->
+        <set-header name="Authorization" exists-action="skip">
+            <value>@(context.Request.Headers.GetValueOrDefault("Authorization"))</value>
+        </set-header>
+
+        <!-- 
+            5. Azure Functions Authentication: Inject Function Key via Named Value 
+        -->
+        <set-header name="x-functions-key" exists-action="override">
+            <value>{{function-key}}</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+
