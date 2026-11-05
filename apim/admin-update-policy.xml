@@ -34,31 +34,47 @@
         <!-- 
             3. Entra ID JWT Validation:
                - Uses OpenID Configuration endpoint
-               - Validates audience against {{api-app-id}}
-               - Enforces 'roles' claim contains 'Admin'
-               - Emits HTTP 401 on validation failure
+               - Validates audiences: accepts both {{api-app-id}} and api://{{api-app-id}}
+               - Emits HTTP 401 on missing, invalid, or expired tokens
+               - Extracts validated token into 'jwt' variable for subsequent inspection
         -->
         <validate-jwt header-name="Authorization" 
                       failed-validation-httpcode="401" 
-                      failed-validation-error-message="Unauthorized: Missing, invalid, or expired Entra ID token, or missing 'Admin' role claim." 
+                      failed-validation-error-message="Unauthorized: Missing, invalid, or expired Entra ID token." 
                       require-scheme="Bearer" 
-                      require-expiration-time="true">
+                      require-expiration-time="true" 
+                      output-token-variable-name="jwt">
             <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
                 <audience>{{api-app-id}}</audience>
+                <audience>api://{{api-app-id}}</audience>
             </audiences>
             <issuers>
                 <issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
             </issuers>
-            <required-claims>
-                <claim name="roles" match="any">
-                    <value>Admin</value>
-                </claim>
-            </required-claims>
         </validate-jwt>
 
         <!-- 
-            4. Forward Authorization Header to Backend:
+            4. RBAC Authorization Check:
+               - Inspects the 'roles' claim in the validated 'jwt' variable
+               - Safely handles a missing 'roles' claim by defaulting to an empty array (new string[0])
+               - Emits HTTP 403 when the caller lacks the 'Admin' role
+               - Preserves HTTP 200 for authorized Admin callers forwarding to backend
+        -->
+        <choose>
+            <when condition="@(!(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;roles&quot;, new string[0]) ?? new string[0]).Contains(&quot;Admin&quot;))">
+                <return-response>
+                    <set-status code="403" reason="Forbidden" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>{"error": "Forbidden: Caller does not have the required 'Admin' role."}</set-body>
+                </return-response>
+            </when>
+        </choose>
+
+        <!-- 
+            5. Forward Authorization Header to Backend:
                Preserves the original client Bearer token so the backend Function
                can extract caller identity (oid) and write non-PII audit trails.
         -->
@@ -67,7 +83,7 @@
         </set-header>
 
         <!-- 
-            5. Azure Functions Authentication: Inject Function Key via Named Value 
+            6. Azure Functions Authentication: Inject Function Key via Named Value 
         -->
         <set-header name="x-functions-key" exists-action="override">
             <value>{{function-key}}</value>
@@ -83,4 +99,3 @@
         <base />
     </on-error>
 </policies>
-

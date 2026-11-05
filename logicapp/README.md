@@ -1,6 +1,6 @@
 # Azure Logic App (Consumption) Design & Implementation Guide
 
-This document describes the step-by-step portal design, configuration settings, retry policies, error-handling scopes, and email templates for the **Student Fee Overdue Reminders Logic App (Consumption)**.
+This document describes the step-by-step portal design, configuration settings, retry policies, error-handling scopes, email safety filters, and email templates for the **Student Fee Overdue Reminders Logic App (Consumption)**.
 
 ---
 
@@ -15,15 +15,20 @@ flowchart TD
 
     subgraph TryScope ["Scope: Try_Process_Overdue_Students"]
         UntilLoop{"Until Loop<br/>Condition: count &lt; Top"}
-        HTTPGet["HTTP / Azure Functions<br/>GET /api/overdue?top=100&skip=0<br/>(Retry: Exponential count=4, interval=PT10S)"]
+        HTTPGet["HTTP / Azure Functions<br/>GET /api/overdue?top=100&skip=0<br/>(Header: x-functions-key = Actual Key)<br/>(Retry: Exponential count=4, interval=PT10S)"]
         ForEach["For each Student<br/>(Concurrency Control: 5)"]
+        SafetyCheck{"Condition: Is Real Email?<br/>not(endsWith(email, '@example.com'))"}
         SendMail["Send Email (SendGrid / Office 365)<br/>(Retry: Exponential count=4, interval=PT10S)"]
+        SkipDummy["Skip Dummy / Test Email<br/>(No email dispatched)"]
         IncSkip["Increment variable Skip<br/>Value: Top (100)"]
 
         UntilLoop --> HTTPGet
         HTTPGet --> ForEach
-        ForEach --> SendMail
+        ForEach --> SafetyCheck
+        SafetyCheck -->|True| SendMail
+        SafetyCheck -->|False| SkipDummy
         SendMail --> IncSkip
+        SkipDummy --> IncSkip
         IncSkip --> UntilLoop
     end
 
@@ -36,6 +41,10 @@ flowchart TD
         Alert --> Terminate
     end
 ```
+
+> [!IMPORTANT]
+> **APIM Named Value Syntax Notice**:  
+> The `{{function-key}}` mustache syntax is **specific to Azure API Management (APIM)** policy XML. In Azure Logic Apps, `{{...}}` will **not** be resolved. In Logic Apps, you must supply the **actual Function host key** directly, pass it via a workflow parameter (`@parameters('FunctionKey')`), or fetch it securely from Azure Key Vault.
 
 ---
 
@@ -50,9 +59,10 @@ The table below lists every trigger, variable, action, retry policy, concurrency
 | **Initialize_Variable_Skip** | Built-in: `Initialize variable` | • Name: `Skip`<br/>• Type: `Integer`<br/>• Value: `0` | None | None | Initialize_Variable_Top |
 | **Try_Scope** | Built-in: `Scope` | Container grouping the entire paging and dispatch loop | None | None | Initialize_Variable_Skip |
 | **Until_All_Pages_Fetched** | Built-in: `Until` | Expression: `@less(body('HTTP_Get_Overdue_Students')?['count'], variables('Top'))`<br/>• Count limit: `60`<br/>• Timeout: `PT1H` | None | Sequential iterations | Inside Try_Scope |
-| **HTTP_Get_Overdue_Students** | Built-in: `HTTP` *(or Azure Functions)* | • Method: `GET`<br/>• URI: `https://<function-app>.azurewebsites.net/api/overdue?top=@{variables('Top')}&skip=@{variables('Skip')}`<br/>• Headers:<br/>&nbsp;&nbsp;- `x-functions-key`: `{{function-key}}`<br/>&nbsp;&nbsp;- `x-ms-client-tracking-id`: `@{workflow().run.name}-@{variables('Skip')}` | **Exponential**<br/>• Count: `4`<br/>• Interval: `PT10S`<br/>• Min: `PT10S`<br/>• Max: `PT1H` | None | Inside Until loop |
+| **HTTP_Get_Overdue_Students** | Built-in: `HTTP` *(or Azure Functions)* | • Method: `GET`<br/>• URI: `https://<function-app>.azurewebsites.net/api/overdue?top=@{variables('Top')}&skip=@{variables('Skip')}`<br/>• Headers:<br/>&nbsp;&nbsp;- `x-functions-key`: `<actual-function-host-key>` *(Do not use `{{...}}`)*<br/>&nbsp;&nbsp;- `x-ms-client-tracking-id`: `@{workflow().run.name}-@{variables('Skip')}` | **Exponential**<br/>• Count: `4`<br/>• Interval: `PT10S`<br/>• Min: `PT10S`<br/>• Max: `PT1H` | None | Inside Until loop |
 | **For_each_Student** | Built-in: `For each` | • Select output from previous steps:<br/>`@body('HTTP_Get_Overdue_Students')?['students']` | None | **Concurrency Control:**<br/>• Status: `On`<br/>• Degree of Parallelism: `5` | HTTP_Get_Overdue_Students |
-| **Send_Student_Email** | Connector:<br/>`Office 365 Outlook` *(Send an email (V2))*<br/>OR `SendGrid` *(Send email (V4))* | • To: `@{items('For_each_Student')?['email']}`<br/>• Subject: `Payment Reminder: Overdue Fee Balance - @{items('For_each_Student')?['name']}`<br/>• Body: *(See Template in Section 3)*<br/>• Importance: `Normal` | **Exponential**<br/>• Count: `4`<br/>• Interval: `PT10S`<br/>• Min: `PT10S`<br/>• Max: `PT1H` | Inherits loop concurrency (5) | Inside For_each_Student |
+| **Condition_Filter_Example_Domain** | Built-in: `Condition` | Condition (Email Safety):<br/>`@not(endsWith(toLower(items('For_each_Student')?['email']), '@example.com'))`<br/>*(Skips placeholder test emails from seed data)* | None | None | Inside For_each_Student |
+| **Send_Student_Email** | Connector:<br/>`Office 365 Outlook` *(Send an email (V2))*<br/>OR `SendGrid` *(Send email (V4))* | Inside **If True** branch:<br/>• To: `@{items('For_each_Student')?['email']}`<br/>• Subject: `Payment Reminder: Overdue Fee Balance - @{items('For_each_Student')?['name']}`<br/>• Body: *(See Template in Section 3)*<br/>• Importance: `Normal` | **Exponential**<br/>• Count: `4`<br/>• Interval: `PT10S`<br/>• Min: `PT10S`<br/>• Max: `PT1H` | Inherits loop concurrency (5) | Inside If True of Condition |
 | **Increment_Skip** | Built-in: `Increment variable` | • Name: `Skip`<br/>• Value: `@variables('Top')` | None | None | After For_each_Student |
 | **Catch_Scope** | Built-in: `Scope` | Error containment block for failure notifications | None | None | **Try_Scope**:<br/>☑️ `has failed`<br/>☑️ `has timed out`<br/>*(Uncheck `is successful`)* |
 | **Send_Admin_Failure_Alert** | Connector:<br/>`Office 365 Outlook` / `SendGrid` | • To: `admin-alerts@yourdomain.edu`<br/>• Subject: `🚨 [ALERT] Fee Reminder Logic App Failed - Run ID @{workflow().run.name}`<br/>• Body: Details of failed actions, error message, and portal run URL | Default | None | Inside Catch_Scope |
@@ -202,7 +212,9 @@ Office of the Bursar & Student Accounts
      https://<your-functions-app>.azurewebsites.net/api/overdue?top=@{variables('Top')}&skip=@{variables('Skip')}
      ```
    - **Headers**:
-     - `x-functions-key`: `<Function key from Key Vault or App Settings>`
+     - `x-functions-key`: `<actual-function-host-key>`
+       > [!WARNING]
+       > Do **NOT** use `{{function-key}}` here. The `{{...}}` named-value syntax is exclusively resolved by Azure API Management. In Logic Apps, paste your actual Function host key (copied from Function App -> **App keys**) or retrieve it dynamically using an Azure Key Vault action / workflow parameter.
      - `x-ms-client-tracking-id`: `@{workflow().run.name}-@{variables('Skip')}`
 2. Open **Settings** for `HTTP_Get_Overdue_Students`:
    - Under **Retry Policy**:
@@ -229,20 +241,37 @@ Office of the Bursar & Student Accounts
 
 ---
 
-### Step 7: Add Email Action with Exponential Retry
-1. Inside `For_each_Student`, add **Send an email (V2)** (Office 365) or **Send email (V4)** (SendGrid):
-   - **Rename**: `Send_Student_Email`
-   - **To**: `@{items('For_each_Student')?['email']}`
-   - **Subject**: `Payment Reminder: Overdue Fee Balance - @{items('For_each_Student')?['name']}`
-   - **Body**: Paste the HTML template from Section 3.
-   - Click **Show advanced options** -> set **Is HTML**: `Yes`.
-2. Click `...` on `Send_Student_Email` -> **Settings**:
-   - Under **Retry Policy**:
-     - **Type**: `Exponential Interval`
-     - **Count**: `4`
-     - **Interval**: `PT10S`
-     - **Minimum Interval**: `PT10S`
-   - Click **Done**.
+### Step 7: Add Email Safety Condition & Send Email Action
+To prevent accidental email bounces and spamming non-existent domains when running against test datasets (such as `seed.sql` and `seed_5000.sql`), filter out addresses ending in `@example.com`:
+
+1. Inside `For_each_Student`, add a **Condition** control:
+   - **Rename**: `Condition_Filter_Example_Domain`
+   - In standard mode:
+     - Left operand: `items('For_each_Student')?['email']`
+     - Operator: `does not end with`
+     - Right operand: `@example.com`
+   - In advanced expression mode:
+     ```text
+     @not(endsWith(toLower(items('For_each_Student')?['email']), '@example.com'))
+     ```
+
+2. Under the **If True** branch:
+   - Add **Send an email (V2)** (Office 365 Outlook) or **Send email (V4)** (SendGrid):
+     - **Rename**: `Send_Student_Email`
+     - **To**: `@{items('For_each_Student')?['email']}`
+     - **Subject**: `Payment Reminder: Overdue Fee Balance - @{items('For_each_Student')?['name']}`
+     - **Body**: Paste the HTML template from Section 3.
+     - Click **Show advanced options** -> set **Is HTML**: `Yes`.
+   - Click `...` on `Send_Student_Email` -> **Settings**:
+     - Under **Retry Policy**:
+       - **Type**: `Exponential Interval`
+       - **Count**: `4`
+       - **Interval**: `PT10S`
+       - **Minimum Interval**: `PT10S`
+     - Click **Done**.
+
+3. Under the **If False** branch:
+   - Leave empty (or add a **Compose** action: `Skipping test recipient: @{items('For_each_Student')?['email']}`). This ensures synthetic and sample student accounts are silently skipped.
 
 ---
 
@@ -288,6 +317,7 @@ Office of the Bursar & Student Accounts
    - Verify `Try_Scope` displays green checkmarks.
    - Inspect `HTTP_Get_Overdue_Students` input/output payloads to verify `top=100` and `skip=0` pagination.
    - Confirm `For_each_Student` processes batches in parallel with max 5 concurrent executions.
+   - Verify that rows with `@example.com` emails take the **False** branch of `Condition_Filter_Example_Domain` and do not trigger outbound email dispatches.
 3. **Verify Retry Behavior**:
    - If the backend returns a transient `503` or `429`, confirm the action attempts 4 retries spaced at exponential intervals (`10s`, `20s`, `40s`, `80s`).
 4. **Verify Catch Branch**:
