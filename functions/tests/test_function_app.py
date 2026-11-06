@@ -31,7 +31,7 @@ def test_student_status_non_integer_id(dummy_request_builder):
 
     assert resp.status_code == 400
     body = json.loads(resp.get_body().decode())
-    assert body["error"] == "Invalid student ID. Must be an integer."
+    assert body["error"] == "Invalid student ID. Must be a positive integer."
 
 
 def test_student_status_not_found(dummy_request_builder):

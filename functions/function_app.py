@@ -1,3 +1,4 @@
+
 """
 Azure Functions Python v2 Programming Model Entrypoint
 Student Fee Management Microservice API with Structured Observability
@@ -86,7 +87,7 @@ def _validate_fee_payload(
     if not isinstance(body, dict):
         return None, {"body": "Request body must be a JSON object."}
 
-    # 1. Validate totalFee (number >= 0)
+    # 1. Validate totalFee
     if "totalFee" not in body or body["totalFee"] is None:
         errors["totalFee"] = "totalFee is required."
     else:
@@ -99,7 +100,7 @@ def _validate_fee_payload(
         except Exception:
             errors["totalFee"] = "totalFee must be a valid number."
 
-    # 2. Validate paidAmount (number >= 0 and <= totalFee)
+    # 2. Validate paidAmount
     if "paidAmount" not in body or body["paidAmount"] is None:
         errors["paidAmount"] = "paidAmount is required."
     else:
@@ -112,12 +113,12 @@ def _validate_fee_payload(
         except Exception:
             errors["paidAmount"] = "paidAmount must be a valid number."
 
-    # Cross-field check: paidAmount <= totalFee
+    # Cross-field validation
     if "totalFee" in cleaned and "paidAmount" in cleaned:
         if cleaned["paidAmount"] > cleaned["totalFee"]:
             errors["paidAmount"] = "paidAmount cannot exceed totalFee."
 
-    # 3. Validate dueDate (valid ISO date format YYYY-MM-DD)
+    # 3. Validate dueDate
     if "dueDate" not in body or body["dueDate"] is None:
         errors["dueDate"] = "dueDate is required."
     else:
@@ -133,18 +134,16 @@ def _validate_fee_payload(
 
 # ==============================================================================
 # Health Check Endpoint
-# GET /api/health (Auth Level: ANONYMOUS)
+# GET /api/health
 # ==============================================================================
+
 @app.route(
     route="health",
     methods=["GET"],
     auth_level=func.AuthLevel.ANONYMOUS
 )
 def health_check(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Anonymous health check probe running SELECT 1 against the database.
-    Returns 200 if connected, 503 if database connectivity fails.
-    """
+
     start_time = time.perf_counter()
     request_id = _get_request_id(req)
     operation = "health_check"
@@ -156,29 +155,33 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
         if val == 1:
             _log_structured(
                 logging.INFO, request_id, operation,
-                duration_ms=duration_ms, status_code=200, message="Healthy"
+                duration_ms=duration_ms,
+                status_code=200,
+                message="Healthy"
             )
             return json_response(
                 {"status": "healthy", "database": "connected"},
                 status_code=200,
                 headers={"x-ms-client-tracking-id": request_id}
             )
-        else:
-            _log_structured(
-                logging.WARNING, request_id, operation,
-                duration_ms=duration_ms, status_code=503, message="Unexpected DB scalar value"
-            )
-            return json_response(
-                {"status": "unhealthy", "error": "Database connectivity check failed."},
-                status_code=503,
-                headers={"x-ms-client-tracking-id": request_id}
-            )
 
-    except Exception as ex:
+        _log_structured(
+            logging.WARNING, request_id, operation,
+            duration_ms=duration_ms,
+            status_code=503,
+            message="Unexpected DB scalar value"
+        )
+        return json_response(
+            {"status": "unhealthy", "error": "Database connectivity check failed."},
+            status_code=503,
+            headers={"x-ms-client-tracking-id": request_id}
+        )
+
+    except Exception:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(
-            "request_id=%s operation=%s status=503 duration_ms=%.2f msg='Database health check failed: %s'",
-            request_id, operation, duration_ms, str(ex)
+            "request_id=%s operation=%s status=503 duration_ms=%.2f msg='Database health check failed'",
+            request_id, operation, duration_ms
         )
         return json_response(
             {"status": "unhealthy", "error": "Database connectivity check failed."},
@@ -189,70 +192,97 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
 
 # ==============================================================================
 # Student Fee Status Endpoint
-# GET /api/students/{studentId}/status (Auth Level: FUNCTION)
+# GET /api/students/{studentId}/status
 # ==============================================================================
+
 @app.route(
     route="students/{studentId}/status",
     methods=["GET"],
     auth_level=func.AuthLevel.FUNCTION
 )
 def get_student_fee_status(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Retrieves the fee status of a specific student.
 
-    Returns JSON:
-      studentId, name, totalFee, paidAmount, balance, dueDate, status
-
-    Error responses:
-      400 - If studentId is non-integer
-      404 - If student is not found
-      500 - Generic error message on DB/unexpected errors (logs stack trace internally)
-    """
     start_time = time.perf_counter()
     request_id = _get_request_id(req)
     operation = "get_student_fee_status"
     student_id = None
 
     try:
-        raw_student_id = req.route_params.get("studentId")
-
-        # Validate integer student ID
+        # 1. Authenticate caller
         try:
-            student_id = int(raw_student_id)
-        except (ValueError, TypeError):
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            _log_structured(
-                logging.WARNING, request_id, operation,
-                duration_ms=duration_ms, student_id=raw_student_id,
-                status_code=400, message="Invalid student ID parameter"
-            )
+            caller_oid, roles = get_caller(req)
+        except Exception:
             return error_response(
-                "Invalid student ID. Must be an integer.",
+                "Unauthorized: Invalid credentials.",
+                status_code=401,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        if not caller_oid:
+            return error_response(
+                "Unauthorized: Missing caller identity.",
+                status_code=401,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        # 2. Validate student ID
+        try:
+            student_id = int(req.route_params.get("studentId"))
+            if student_id <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return error_response(
+                "Invalid student ID. Must be a positive integer.",
                 status_code=400,
                 headers={"x-ms-client-tracking-id": request_id}
             )
 
+        # 3. Fetch student record
         sql = """
-            SELECT StudentID, Name, TotalFee, PaidAmount, DueDate
+            SELECT StudentID, Name, TotalFee, PaidAmount,
+                   DueDate, EntraObjectId
             FROM dbo.Students
             WHERE StudentID = ?
         """
         student = execute_one(sql, (student_id,))
 
-        duration_ms = (time.perf_counter() - start_time) * 1000
-
         if not student:
-            _log_structured(
-                logging.INFO, request_id, operation,
-                duration_ms=duration_ms, student_id=student_id,
-                status_code=404, message="Student not found"
-            )
             return error_response(
                 f"Student with ID {student_id} not found.",
                 status_code=404,
                 headers={"x-ms-client-tracking-id": request_id}
             )
 
+        # 4. Authorization
+        if "Admin" in roles:
+            pass
+
+        elif "Student" in roles:
+            linked_oid = student.get("EntraObjectId")
+
+            if not linked_oid or str(linked_oid).lower() != str(caller_oid).lower():
+                _log_structured(
+                    logging.WARNING,
+                    request_id,
+                    operation,
+                    student_id=student_id,
+                    status_code=403,
+                    message="Student attempted to access another student's record"
+                )
+                return error_response(
+                    "Forbidden: You can only view your own fee status.",
+                    status_code=403,
+                    headers={"x-ms-client-tracking-id": request_id}
+                )
+
+        else:
+            return error_response(
+                "Forbidden: Admin or Student role required.",
+                status_code=403,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        # 5. Calculate fee status
         total_fee = student["TotalFee"]
         paid_amount = student["PaidAmount"]
         due_date = student["DueDate"]
@@ -263,13 +293,8 @@ def get_student_fee_status(req: func.HttpRequest) -> func.HttpResponse:
             due_date=due_date,
             today=date.today()
         )
-        balance = Decimal(str(total_fee)) - Decimal(str(paid_amount))
 
-        _log_structured(
-            logging.INFO, request_id, operation,
-            duration_ms=duration_ms, student_id=student_id,
-            status_code=200, fee_status=status
-        )
+        balance = Decimal(str(total_fee)) - Decimal(str(paid_amount))
 
         response_payload = {
             "studentId": student["StudentID"],
@@ -282,18 +307,31 @@ def get_student_fee_status(req: func.HttpRequest) -> func.HttpResponse:
                 if hasattr(due_date, "isoformat")
                 else str(due_date)
             ),
-            "status": status,
+            "status": status
         }
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        _log_structured(
+            logging.INFO,
+            request_id,
+            operation,
+            duration_ms=duration_ms,
+            student_id=student_id,
+            status_code=200,
+            fee_status=status
+        )
+
         return json_response(
             response_payload,
             status_code=200,
             headers={"x-ms-client-tracking-id": request_id}
         )
 
-    except Exception as ex:
+    except Exception:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(
-            "request_id=%s operation=%s studentId=%s status=500 duration_ms=%.2f msg='Unexpected exception in get_student_fee_status'",
+            "request_id=%s operation=%s studentId=%s status=500 duration_ms=%.2f",
             request_id, operation, student_id, duration_ms
         )
         return error_response(
@@ -305,43 +343,30 @@ def get_student_fee_status(req: func.HttpRequest) -> func.HttpResponse:
 
 # ==============================================================================
 # Admin Student Fees Update Endpoint
-# PUT /api/admin/students/{studentId}/fees (Auth Level: FUNCTION)
+# PUT /api/students/{studentId}/fees
 # ==============================================================================
+
 @app.route(
-    route="admin/students/{studentId}/fees",
+    route="students/{studentId}/fees",
     methods=["PUT"],
-    auth_level=func.AuthLevel.FUNCTION
+    auth_level=func.AuthLevel.ANONYMOUS
 )
 def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Updates totalFee, paidAmount, and dueDate for a student.
 
-    Permissions:
-      - 401 if no valid caller
-      - 403 unless caller roles contain 'Admin'
-
-    Validation:
-      - numbers >= 0, paidAmount <= totalFee, dueDate valid ISO date
-      - 400 with field-level errors
-
-    Database:
-      - Parameterized UPDATE
-      - 404 if no row found
-      - Writes audit log line (admin oid, studentId, old values, new values) with NO PII beyond IDs
-      - Returns updated record with recomputed status
-    """
     start_time = time.perf_counter()
     request_id = _get_request_id(req)
     operation = "update_student_fees"
     student_id = None
 
     try:
-        # 1. Caller Authentication
+        # 1. Authenticate caller
         try:
             admin_oid, roles = get_caller(req)
-        except Exception as ex:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            logger.warning("request_id=%s operation=%s status=401 msg='Authentication failure: %s'", request_id, operation, ex)
+        except Exception:
+            logger.warning(
+                "request_id=%s operation=%s status=401 msg='Authentication failure'",
+                request_id, operation
+            )
             return error_response(
                 "Unauthorized: Invalid credentials.",
                 status_code=401,
@@ -349,50 +374,38 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         if not admin_oid:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            logger.warning("request_id=%s operation=%s status=401 msg='Missing or invalid caller'", request_id, operation)
             return error_response(
                 "Unauthorized: Missing or invalid authentication.",
                 status_code=401,
                 headers={"x-ms-client-tracking-id": request_id}
             )
 
-        # 2. Role Check: Must contain 'Admin'
+        # 2. Admin-only authorization
         if "Admin" not in roles:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            logger.warning("request_id=%s operation=%s admin_oid=%s status=403 msg='Missing Admin role'", request_id, operation, admin_oid)
+            logger.warning(
+                "request_id=%s operation=%s status=403 msg='Missing Admin role'",
+                request_id, operation
+            )
             return error_response(
                 "Forbidden: Requires 'Admin' role.",
                 status_code=403,
                 headers={"x-ms-client-tracking-id": request_id}
             )
 
-        # 3. Route Parameter Validation
+        # 3. Validate student ID
         raw_student_id = req.route_params.get("studentId")
         try:
             student_id = int(raw_student_id)
         except (ValueError, TypeError):
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            _log_structured(
-                logging.WARNING, request_id, operation,
-                duration_ms=duration_ms, student_id=raw_student_id,
-                status_code=400, message="Non-integer student ID in route"
-            )
             return json_response({
                 "error": "Validation failed",
                 "errors": {"studentId": "studentId must be an integer."}
             }, status_code=400, headers={"x-ms-client-tracking-id": request_id})
 
-        # 4. Request Body Parsing & Field-Level Validation
+        # 4. Parse request body
         try:
             body = req.get_json()
         except ValueError:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            _log_structured(
-                logging.WARNING, request_id, operation,
-                duration_ms=duration_ms, student_id=student_id,
-                status_code=400, message="Malformed JSON body"
-            )
             return error_response(
                 "Invalid JSON in request body.",
                 status_code=400,
@@ -400,13 +413,8 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         cleaned_data, errors = _validate_fee_payload(body)
+
         if errors:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            _log_structured(
-                logging.WARNING, request_id, operation,
-                duration_ms=duration_ms, student_id=student_id,
-                status_code=400, message="Fee payload validation failed"
-            )
             return json_response({
                 "error": "Validation failed",
                 "errors": errors
@@ -425,19 +433,13 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
         old_row = execute_one(select_sql, (student_id,))
 
         if not old_row:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            _log_structured(
-                logging.INFO, request_id, operation,
-                duration_ms=duration_ms, student_id=student_id,
-                status_code=404, message="Student not found for fee update"
-            )
             return error_response(
                 f"Student with ID {student_id} not found.",
                 status_code=404,
                 headers={"x-ms-client-tracking-id": request_id}
             )
 
-        # 6. Parameterized UPDATE
+        # 6. Update student fees
         update_sql = """
             UPDATE dbo.Students
             SET TotalFee = ?, PaidAmount = ?, DueDate = ?
@@ -445,7 +447,7 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
         """
         execute_non_query(update_sql, (total_fee, paid_amount, due_date, student_id))
 
-        # 7. Write Audit Log Line (Admin OID, StudentID, Old Values, New Values - NO PII beyond IDs)
+        # 7. Audit log
         old_due = old_row["DueDate"]
         old_due_str = old_due.isoformat() if hasattr(old_due, "isoformat") else str(old_due)
 
@@ -465,21 +467,15 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
             request_id, operation, admin_oid, student_id, old_values, new_values
         )
 
-        # 8. Recompute Status & Return
+        # 8. Recompute status
         status = compute_status(
             total_fee=total_fee,
             paid_amount=paid_amount,
             due_date=due_date,
             today=date.today()
         )
-        balance = total_fee - paid_amount
 
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        _log_structured(
-            logging.INFO, request_id, operation,
-            duration_ms=duration_ms, student_id=student_id,
-            status_code=200, fee_status=status
-        )
+        balance = total_fee - paid_amount
 
         response_payload = {
             "studentId": student_id,
@@ -488,18 +484,31 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
             "paidAmount": float(paid_amount),
             "balance": float(balance),
             "dueDate": due_date.isoformat(),
-            "status": status,
+            "status": status
         }
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        _log_structured(
+            logging.INFO,
+            request_id,
+            operation,
+            duration_ms=duration_ms,
+            student_id=student_id,
+            status_code=200,
+            fee_status=status
+        )
+
         return json_response(
             response_payload,
             status_code=200,
             headers={"x-ms-client-tracking-id": request_id}
         )
 
-    except Exception as ex:
+    except Exception:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(
-            "request_id=%s operation=%s studentId=%s status=500 duration_ms=%.2f msg='Unexpected exception in update_student_fees'",
+            "request_id=%s operation=%s studentId=%s status=500 duration_ms=%.2f",
             request_id, operation, student_id, duration_ms
         )
         return error_response(
@@ -511,53 +520,75 @@ def update_student_fees(req: func.HttpRequest) -> func.HttpResponse:
 
 # ==============================================================================
 # Overdue Students Query Endpoint
-# GET /api/overdue (Auth Level: FUNCTION)
+# GET /api/overdue (Admin Only)
 # ==============================================================================
+
 @app.route(
     route="overdue",
     methods=["GET"],
     auth_level=func.AuthLevel.FUNCTION
 )
 def get_overdue_students(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Returns paginated list of overdue students via sp_GetOverdueStudents.
-    Query parameters:
-      top: default 100, max 500
-      skip: default 0
-    Returns JSON:
-      { count, students: [{ studentId, name, email, balance, dueDate, daysOverdue }] }
-    """
+
     start_time = time.perf_counter()
     request_id = _get_request_id(req)
     operation = "get_overdue_students"
 
     try:
+        # 1. Authenticate caller
+        try:
+            admin_oid, roles = get_caller(req)
+        except Exception:
+            return error_response(
+                "Unauthorized: Invalid credentials.",
+                status_code=401,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        if not admin_oid:
+            return error_response(
+                "Unauthorized: Missing or invalid authentication.",
+                status_code=401,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        # 2. Admin-only authorization
+        if "Admin" not in roles:
+            _log_structured(
+                logging.WARNING,
+                request_id,
+                operation,
+                duration_ms=(time.perf_counter() - start_time) * 1000,
+                status_code=403,
+                message="Missing Admin role"
+            )
+            return error_response(
+                "Forbidden: Requires 'Admin' role.",
+                status_code=403,
+                headers={"x-ms-client-tracking-id": request_id}
+            )
+
+        # 3. Validate pagination parameters
         raw_top = req.params.get("top")
         raw_skip = req.params.get("skip")
 
         top = 100
+
         if raw_top is not None:
             try:
                 top = int(raw_top)
+
                 if top <= 0:
-                    duration_ms = (time.perf_counter() - start_time) * 1000
-                    _log_structured(
-                        logging.WARNING, request_id, operation,
-                        duration_ms=duration_ms, status_code=400, message="Non-positive top parameter"
-                    )
                     return error_response(
                         "Query parameter 'top' must be a positive integer.",
                         status_code=400,
                         headers={"x-ms-client-tracking-id": request_id}
                     )
+
                 if top > 500:
                     top = 500
+
             except (ValueError, TypeError):
-                duration_ms = (time.perf_counter() - start_time) * 1000
-                _log_structured(
-                    logging.WARNING, request_id, operation,
-                    duration_ms=duration_ms, status_code=400, message="Invalid top parameter"
-                )
                 return error_response(
                     "Query parameter 'top' must be an integer.",
                     status_code=400,
@@ -565,32 +596,26 @@ def get_overdue_students(req: func.HttpRequest) -> func.HttpResponse:
                 )
 
         skip = 0
+
         if raw_skip is not None:
             try:
                 skip = int(raw_skip)
+
                 if skip < 0:
-                    duration_ms = (time.perf_counter() - start_time) * 1000
-                    _log_structured(
-                        logging.WARNING, request_id, operation,
-                        duration_ms=duration_ms, status_code=400, message="Negative skip parameter"
-                    )
                     return error_response(
                         "Query parameter 'skip' must be greater than or equal to 0.",
                         status_code=400,
                         headers={"x-ms-client-tracking-id": request_id}
                     )
+
             except (ValueError, TypeError):
-                duration_ms = (time.perf_counter() - start_time) * 1000
-                _log_structured(
-                    logging.WARNING, request_id, operation,
-                    duration_ms=duration_ms, status_code=400, message="Invalid skip parameter"
-                )
                 return error_response(
                     "Query parameter 'skip' must be an integer.",
                     status_code=400,
                     headers={"x-ms-client-tracking-id": request_id}
                 )
 
+        # 4. Execute stored procedure
         sql = "EXEC dbo.sp_GetOverdueStudents @Top = ?, @Skip = ?"
         rows = execute_query(sql, (top, skip))
 
@@ -599,6 +624,7 @@ def get_overdue_students(req: func.HttpRequest) -> func.HttpResponse:
 
         for row in rows:
             raw_due = row["DueDate"]
+
             if isinstance(raw_due, datetime):
                 due_d = raw_due.date()
             elif isinstance(raw_due, str):
@@ -607,7 +633,13 @@ def get_overdue_students(req: func.HttpRequest) -> func.HttpResponse:
                 due_d = raw_due
 
             days_overdue = max(0, (today - due_d).days)
-            balance = float(row.get("BalanceAmount", Decimal(str(row["TotalFee"])) - Decimal(str(row["PaidAmount"]))))
+
+            balance = float(
+                row.get(
+                    "BalanceAmount",
+                    Decimal(str(row["TotalFee"])) - Decimal(str(row["PaidAmount"]))
+                )
+            )
 
             students_list.append({
                 "studentId": row["StudentID"],
@@ -618,19 +650,28 @@ def get_overdue_students(req: func.HttpRequest) -> func.HttpResponse:
                 "daysOverdue": days_overdue
             })
 
+        # 5. Structured logging
         duration_ms = (time.perf_counter() - start_time) * 1000
-        # Privacy: Never log individual student emails or PII in the structured log
+
         _log_structured(
-            logging.INFO, request_id, operation,
-            duration_ms=duration_ms, status_code=200, count=len(students_list)
+            logging.INFO,
+            request_id,
+            operation,
+            duration_ms=duration_ms,
+            status_code=200,
+            count=len(students_list)
         )
 
-        return json_response({
-            "count": len(students_list),
-            "students": students_list
-        }, status_code=200, headers={"x-ms-client-tracking-id": request_id})
+        return json_response(
+            {
+                "count": len(students_list),
+                "students": students_list
+            },
+            status_code=200,
+            headers={"x-ms-client-tracking-id": request_id}
+        )
 
-    except Exception as ex:
+    except Exception:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(
             "request_id=%s operation=%s status=500 duration_ms=%.2f msg='Unexpected exception in get_overdue_students'",

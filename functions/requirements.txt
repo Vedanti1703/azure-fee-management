@@ -1,11 +1,11 @@
 # Azure Functions Core
 azure-functions>=1.18.0
 
-# Database & Retries
-pyodbc>=5.0.0
+# Database driver and retries
+mssql-python==1.16.0
 tenacity>=8.2.0
 
-# Authentication & Security
+# Authentication and Security
 PyJWT[crypto]>=2.8.0
 requests>=2.31.0
 

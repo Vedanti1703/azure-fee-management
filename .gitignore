@@ -47,6 +47,11 @@ htmlcov/
 *.cover
 *.log
 
+# Build & deployment artifacts
+*.zip
+*.backup
+*.bak
+
 # IDEs and Editors
 .vscode/
 .idea/
